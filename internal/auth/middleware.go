@@ -24,6 +24,10 @@ func cloudMode() bool { return cloud.Mode() }
 // Mode-specific exempt paths are passed through.
 // Outside Cloud, soft-auth paths attempt auth but don't 401 on failure.
 func Authenticate(cfg Config) func(http.Handler) http.Handler {
+	return authenticate(cfg, nil)
+}
+
+func authenticate(cfg Config, tokenSessions *oidcTokenSessions) func(http.Handler) http.Handler {
 	cfg.Defaults()
 
 	return func(next http.Handler) http.Handler {
@@ -57,7 +61,12 @@ func Authenticate(cfg Config) func(http.Handler) http.Handler {
 			// browser-carried Radar session must never override the Hub-injected
 			// user/groups if an upstream cookie-strip defense regresses.
 			var session *Session
-			if !cloudProxyMode {
+			if cfg.Mode == "oidc" && pkgauth.UserTokenMode() {
+				if entry, ok := tokenSessions.get(oidcTokenSessionID(r)); ok && (cfg.Revoker == nil || !cfg.Revoker.IsRevoked(entry.providerSID)) {
+					next.ServeHTTP(w, r.WithContext(ContextWithUser(r.Context(), entry.user)))
+					return
+				}
+			} else if !cloudProxyMode {
 				session = ParseSessionCookie(r, cfg.Secret)
 			}
 			if session != nil {

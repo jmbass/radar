@@ -1,6 +1,9 @@
 {{- if and .Values.persistence.enabled (eq .Values.timeline.storage "sqlite") (gt (int .Values.replicaCount) 1) }}
 {{- fail "replicaCount must be 1 when persistence.enabled=true and timeline.storage=sqlite: a single PVC cannot be safely shared across pods (RWO volumes won't attach to a second pod, RWX volumes risk SQLite corruption)" }}
 {{- end }}
+{{- if and (include "radar.userTokenMode" . | eq "true") (not .Values.cloud.enabled) (ne (int .Values.replicaCount) 1) }}
+{{- fail "replicaCount must be 1 in standalone user-token mode: OIDC token sessions are held in memory by the Radar pod" }}
+{{- end }}
 {{- if and (eq .Values.timeline.storage "postgres") (not .Values.timeline.postgres.existingSecret) }}
 {{- fail "timeline.postgres.existingSecret is required when timeline.storage=postgres" }}
 {{- end }}
@@ -387,16 +390,16 @@ spec:
               value: "/tmp/helm/config"
             - name: HELM_DATA_HOME
               value: "/tmp/helm/data"
+            {{- if include "radar.userTokenMode" . | eq "true" }}
+            - name: RADAR_AUTH_K8S_CREDENTIALS
+              value: "user-token"
+            {{- end }}
             {{- if .Values.cloud.enabled }}
             # Signals cloud-mode to the Radar binary: forces --auth-mode=proxy,
             # accepts forwarded identity headers from the tunnel, disables
             # startup-config fields that don't apply under hosted Radar Cloud.
             - name: RADAR_CLOUD_MODE
               value: "true"
-            {{- if include "radar.userTokenMode" . | eq "true" }}
-            - name: RADAR_AUTH_K8S_CREDENTIALS
-              value: "user-token"
-            {{- end }}
             {{- if or .Values.cloud.token .Values.cloud.existingSecret }}
             - name: RADAR_CLOUD_TOKEN
               {{- if .Values.cloud.existingSecret }}

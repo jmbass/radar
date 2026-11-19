@@ -40,6 +40,15 @@ func userTokenIdentity(w http.ResponseWriter, r *http.Request, cfg Config, usern
 		return &User{Username: username, Groups: kubeGroups, HubGroups: hubGroups}, true
 	}
 
+	user, ok := reviewKubernetesUserToken(w, r, cfg, username, token)
+	if !ok {
+		return nil, false
+	}
+	user.HubGroups = hubGroups
+	return user, true
+}
+
+func reviewKubernetesUserToken(w http.ResponseWriter, r *http.Request, cfg Config, username, token string) (*User, bool) {
 	if cfg.TokenReviewer == nil {
 		writeUserTokenError(w, http.StatusServiceUnavailable, "token_review_unavailable", "Radar cannot verify Kubernetes tokens", cfg.Mode)
 		return nil, false
@@ -62,7 +71,7 @@ func userTokenIdentity(w http.ResponseWriter, r *http.Request, cfg Config, usern
 	}
 	if reviewed.Username != username {
 		log.Printf("[auth] token identity %q does not match forwarded user %q", reviewed.Username, username)
-		writeUserTokenError(w, http.StatusForbidden, "token_identity_mismatch", "Your sign-in token belongs to a different Kubernetes user ("+reviewed.Username+") than the one forwarded ("+username+")", cfg.Mode)
+		writeUserTokenError(w, http.StatusForbidden, "token_identity_mismatch", "Your token belongs to a different Kubernetes user ("+reviewed.Username+") than your signed-in identity ("+username+")", cfg.Mode)
 		return nil, false
 	}
 	for _, g := range reviewed.Groups {
@@ -78,7 +87,6 @@ func userTokenIdentity(w http.ResponseWriter, r *http.Request, cfg Config, usern
 	}
 	user := *reviewed
 	user.Token = token
-	user.HubGroups = hubGroups
 	return &user, true
 }
 

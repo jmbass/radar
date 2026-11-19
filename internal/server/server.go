@@ -403,9 +403,7 @@ func New(cfg Config) *Server {
 
 			// Wire up backchannel logout revocation store
 			if s.authConfig.OIDCBackchannelLogout {
-				revoker := auth.NewMemoryRevoker()
-				oidcHandler.SetRevoker(revoker)
-				s.authConfig.Revoker = revoker // middleware uses this for IsRevoked checks
+				oidcHandler.SetRevoker(auth.NewMemoryRevoker())
 			}
 
 			s.oidcHandler = oidcHandler
@@ -513,7 +511,9 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 	}))
 
 	// Auth middleware (when auth is enabled)
-	if s.authConfig.Enabled() {
+	if s.oidcHandler != nil {
+		r.Use(s.oidcHandler.Authenticate)
+	} else if s.authConfig.Enabled() {
 		r.Use(auth.Authenticate(s.authConfig))
 	}
 

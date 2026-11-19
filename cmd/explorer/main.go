@@ -191,7 +191,7 @@ func main() {
 	clusterNamePrefix := flag.String("cluster-name-prefix", os.Getenv("RADAR_CLUSTER_NAME_PREFIX"), "With an enrollment key: text put before the cluster name Radar picks. Ignored when --cluster-name is set. Env: RADAR_CLUSTER_NAME_PREFIX")
 	clusterNameSuffix := flag.String("cluster-name-suffix", os.Getenv("RADAR_CLUSTER_NAME_SUFFIX"), "With an enrollment key: text put after the cluster name Radar picks. Ignored when --cluster-name is set. Env: RADAR_CLUSTER_NAME_SUFFIX")
 	cloudInsecureSkipVerify := flag.Bool("cloud-insecure-skip-verify", os.Getenv("RADAR_CLOUD_INSECURE_SKIP_VERIFY") == "true", "Skip TLS verification on the Radar Hub tunnel — for trials against a Radar Cloud Self-Managed control plane with a self-signed cert (insecure: encrypted but not authenticated). Env: RADAR_CLOUD_INSECURE_SKIP_VERIFY")
-	k8sCredentials := flag.String("auth-k8s-credentials", os.Getenv("RADAR_AUTH_K8S_CREDENTIALS"), "How Radar authenticates the Kubernetes calls it makes for a user: impersonate (default; Radar's ServiceAccount impersonates the user) or user-token (the user's own token, received with each request through the Radar Cloud tunnel; no impersonation). user-token requires RADAR_CLOUD_MODE and a verified tunnel. Env: RADAR_AUTH_K8S_CREDENTIALS")
+	k8sCredentials := flag.String("auth-k8s-credentials", os.Getenv("RADAR_AUTH_K8S_CREDENTIALS"), "How Radar authenticates Kubernetes calls for a user: impersonate (default) or user-token (the user's own token from standalone OIDC or a verified Radar Cloud tunnel). Env: RADAR_AUTH_K8S_CREDENTIALS")
 	// Tunable deadlines for slow / high-latency / SSH-tunneled clusters.
 	// Defaults preserve the original behavior. Each flag falls back to an
 	// environment variable so Kubernetes deployments can source values from
@@ -274,12 +274,12 @@ func main() {
 		log.Fatalf("--auth-k8s-credentials: %v", err)
 	}
 	if credentialMode == pkgauth.CredentialsUserToken {
-		if !cloudMode {
-			log.Fatalf("--auth-k8s-credentials=user-token requires RADAR_CLOUD_MODE=true: the token arrives only through the Radar Cloud tunnel")
+		if !cloudMode && *authMode != "oidc" {
+			log.Fatalf("--auth-k8s-credentials=user-token requires --auth-mode=oidc or RADAR_CLOUD_MODE=true")
 		}
 		// Enrollment mode already refused an insecure or plaintext Hub URL,
 		// and the agent address the Hub returns is checked the same way.
-		if cloudStart.mode != cloudEnrollMode && (*cloudInsecureSkipVerify || cloud.ValidateWebSocketURL(*cloudURL) != nil) {
+		if cloudMode && cloudStart.mode != cloudEnrollMode && (*cloudInsecureSkipVerify || cloud.ValidateWebSocketURL(*cloudURL) != nil) {
 			log.Fatalf("--auth-k8s-credentials=user-token needs a verified tunnel (wss:// without --cloud-insecure-skip-verify; ws:// only to loopback): user tokens travel over it")
 		}
 		log.Printf("[auth] Kubernetes credentials: user-token (no impersonation)")

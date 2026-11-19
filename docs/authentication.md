@@ -368,9 +368,17 @@ A `radar:member` attempting to install a chart that bundles its own RBAC will ge
 <a id="user-token-mode"></a>
 #### User-token mode (no impersonation)
 
-**Radar Cloud only.** This mode is for clusters connected to a self-managed Radar Cloud control plane that uses user tokens. Standalone Radar doesn't use it. Set it up on the control plane: [User tokens](https://radarhq.io/docs/cloud/self-hosted/user-tokens).
-
 Set `auth.kubernetesCredentials: user-token` (flag `--auth-k8s-credentials=user-token`, env `RADAR_AUTH_K8S_CREDENTIALS`). Radar then stops impersonating people, and the chart grants the ServiceAccount no `impersonate` permission.
+
+##### Standalone OIDC
+
+Set `auth.mode: oidc` and `replicaCount: 1`, and use a Radar image built with standalone user-token support. The Kubernetes API server must accept the ID token issued to Radar's OIDC client, and the Kubernetes username must match Radar's configured username claim and prefix. Radar uses the API server's identity for access checks and the token for live calls. The ServiceAccount still populates the shared read cache.
+
+Radar stores the token in memory and sends the browser only an opaque session cookie. The session ends at token expiry, the configured session TTL, logout, or a pod restart. Users sign in again to obtain a new token.
+
+##### Radar Cloud
+
+Set up user tokens on the self-managed Radar Cloud control plane: [User tokens](https://radarhq.io/docs/cloud/self-hosted/user-tokens).
 
 **How Radar handles each tunneled request:**
 

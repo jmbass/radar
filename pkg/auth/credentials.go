@@ -14,10 +14,10 @@ const (
 	// CredentialsImpersonate sends Radar's ServiceAccount token with
 	// Impersonate-User/Group headers. The default.
 	CredentialsImpersonate CredentialMode = "impersonate"
-	// CredentialsUserToken sends the user's own token, received on each
-	// request, and never impersonates. Requests without a token may read
-	// Radar's cache but make no live calls, except the system identities
-	// accepted by IsSystemIdentity.
+	// CredentialsUserToken sends the user's own token and never impersonates.
+	// Radar obtains it at standalone OIDC login or on each Cloud request.
+	// In Cloud mode, requests without a token may only read Radar's cache,
+	// except the system identities accepted by IsSystemIdentity.
 	CredentialsUserToken CredentialMode = "user-token"
 )
 

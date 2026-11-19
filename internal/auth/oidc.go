@@ -20,6 +20,8 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
+
+	pkgauth "github.com/skyhook-io/radar/pkg/auth"
 )
 
 const oidcStateCookieName = "radar_oidc_state"
@@ -36,6 +38,7 @@ type OIDCHandler struct {
 	httpClient         *http.Client          // custom TLS client for OIDC provider calls; nil = default
 	revoker            *MemoryRevoker        // session revocation store; nil = backchannel logout disabled
 	pkceEnabled        bool                  // opt-in PKCE (S256) for the authorization-code flow
+	tokenSessions      *oidcTokenSessions
 
 	// basePath is the URL prefix Radar serves under ("" at the root). Where Radar
 	// is mounted is the server's concern, not part of the shared auth config, but
@@ -164,6 +167,9 @@ func NewOIDCHandler(ctx context.Context, cfg Config, basePath string) (*OIDCHand
 		backchannelLogoutSupported:        providerClaims.BackchannelLogoutSupported,
 		backchannelLogoutSessionSupported: providerClaims.BackchannelLogoutSessionSupported,
 		pkceEnabled:                       cfg.OIDCEnablePKCE,
+	}
+	if pkgauth.UserTokenMode() {
+		h.tokenSessions = &oidcTokenSessions{entries: make(map[string]oidcTokenSession)}
 	}
 
 	if h.pkceEnabled {
@@ -623,28 +629,39 @@ func (h *OIDCHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[oidc] Generated local session ID (IdP did not provide sid claim)")
 	}
 
-	// Create session cookie (include raw ID token for RP-Initiated Logout).
-	// OIDC runs over HTTPS in practice; mark the cookie Secure unconditionally
-	// to match the middleware invariant (which forces Secure in OIDC mode). The
-	// callback is auth-exempt, so middleware never re-issues to fix a cookie
-	// that was issued non-Secure here.
-	secure := true
-	cookies := CreateSessionCookie(user, sid, rawIDToken, h.cfg.Secret, h.cfg.CookieTTL, secure)
-	for _, c := range cookies {
-		http.SetCookie(w, c)
+	if h.tokenSessions != nil {
+		var ok bool
+		user, ok = reviewKubernetesUserToken(w, r.WithContext(ctx), h.cfg, username, rawIDToken)
+		if !ok {
+			return
+		}
+		expires := time.Now().Add(h.cfg.CookieTTL)
+		if idToken.Expiry.Before(expires) {
+			expires = idToken.Expiry
+		}
+		id := h.tokenSessions.add(oidcTokenSession{user: user, providerSID: sid, expires: expires})
+		if id == "" {
+			http.Error(w, "Radar has reached its active OIDC session limit. Try again later.", http.StatusServiceUnavailable)
+			return
+		}
+		h.tokenSessions.remove(oidcTokenSessionID(r))
+		setOIDCTokenSessionCookie(w, id, expires)
+	} else {
+		// Include the ID token for RP-Initiated Logout in impersonation mode.
+		cookies := CreateSessionCookie(user, sid, rawIDToken, h.cfg.Secret, h.cfg.CookieTTL, true)
+		for _, c := range cookies {
+			http.SetCookie(w, c)
+		}
+		// Oversized sessions return only clearing cookies. Redirecting on failure
+		// would loop back to /auth/login.
+		if !sessionIssued(cookies) {
+			log.Printf("[oidc] Session for %s too large to store in cookies (groups: %d) — refusing login", username, len(groups))
+			http.Error(w, "Your identity has too many groups or claims to fit in a session cookie. Reduce OIDC group membership or token claims.", http.StatusRequestEntityTooLarge)
+			return
+		}
 	}
 
-	// CreateSessionCookie returns only clearing cookies (no value-bearing
-	// cookie) when the identity is too large to fit even when chunked. Don't
-	// redirect as if login succeeded — that loops back to /auth/login. Fail
-	// loudly so the user (and operator, via the [auth] ERROR log) can act.
-	if !sessionIssued(cookies) {
-		log.Printf("[oidc] Session for %s too large to store in cookies (groups: %d) — refusing login", username, len(groups))
-		http.Error(w, "Your identity has too many groups or claims to fit in a session cookie. Reduce OIDC group membership or token claims.", http.StatusRequestEntityTooLarge)
-		return
-	}
-
-	log.Printf("[oidc] User %s authenticated (username claim: %s, groups: %v)", username, usernameClaim, groups)
+	log.Printf("[oidc] User %s authenticated (username claim: %s, groups: %v)", user.Username, usernameClaim, user.Groups)
 
 	// Redirect to the app root under its base path. A bare "/" would leave the
 	// user outside Radar on a subpath deployment, where the ingress routes only
@@ -671,7 +688,10 @@ func sessionIssued(cookies []*http.Cookie) bool {
 func (h *OIDCHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 	// Extract ID token before clearing the cookie (needed as id_token_hint)
 	var idToken string
-	if session := ParseSessionCookie(r, h.cfg.Secret); session != nil {
+	if h.tokenSessions != nil {
+		h.tokenSessions.remove(oidcTokenSessionID(r))
+		setOIDCTokenSessionCookie(w, "", time.Time{})
+	} else if session := ParseSessionCookie(r, h.cfg.Secret); session != nil {
 		idToken = session.IDToken
 	}
 
@@ -724,6 +744,12 @@ func (h *OIDCHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 // Must be called before the handler is registered if backchannel logout is enabled.
 func (h *OIDCHandler) SetRevoker(r *MemoryRevoker) {
 	h.revoker = r
+	h.cfg.Revoker = r
+}
+
+// Authenticate protects routes using this handler's OIDC sessions.
+func (h *OIDCHandler) Authenticate(next http.Handler) http.Handler {
+	return authenticate(h.cfg, h.tokenSessions)(next)
 }
 
 // backchannelLogoutEventURI is the OIDC event type that must appear in the
@@ -832,6 +858,9 @@ func (h *OIDCHandler) HandleBackchannelLogout(w http.ResponseWriter, r *http.Req
 	revocationExpiry := time.Now().Add(h.cfg.CookieTTL)
 	if sid != "" {
 		h.revoker.Revoke(sid, revocationExpiry)
+		if h.tokenSessions != nil {
+			h.tokenSessions.revoke(sid)
+		}
 		log.Printf("[oidc] Backchannel logout: revoked sid=%s (sub=%s, jti=%s)", sid, sub, jti)
 	} else {
 		// sub-only: we can't do targeted revocation (our store is sid-keyed).

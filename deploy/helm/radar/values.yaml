@@ -407,18 +407,13 @@ auth:
   cookieTTL: "4h"
   # How Radar authenticates the Kubernetes calls it makes for a user.
   # "impersonate" (default): the ServiceAccount impersonates the user.
-  # "user-token": Radar uses each user's own token, received with every
-  # request through the Radar Cloud tunnel (cloud.enabled must be true), and
-  # the ServiceAccount gets no impersonate permission. Requests without a
-  # token can read Radar's cache but make no live calls; the radar:system and
-  # radar:ai:reader background identities read through the ServiceAccount,
-  # checked against their own bindings first. Requires
-  # cloud.defaultRbac.create=false: people's access comes from your own RBAC.
+  # "user-token": Radar uses each user's own token. The ServiceAccount gets
+  # no impersonate permission and the API server must accept the user's token.
+  # Standalone requires auth.mode=oidc and replicaCount=1. Radar keeps the ID
+  # token in memory and the user signs in again on expiry or pod restart.
+  # Cloud requires a verified tunnel and cloud.defaultRbac.create=false.
   # rbac.podExec and rbac.portForward are ignored: shells and port-forwards
   # run on each person's token, so the ServiceAccount never needs them.
-  # Needs a verified tunnel (wss://, cloud.insecureSkipVerify=false). Your
-  # API server must accept the tokens your identity provider issues to your
-  # self-managed Radar Cloud control plane.
   kubernetesCredentials: impersonate
   # Proxy mode settings
   proxy:
